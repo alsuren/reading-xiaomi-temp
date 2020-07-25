@@ -35,7 +35,7 @@ fn main() {
 
     println!();
     
-    let device = BluetoothDevice::new(bt_session, String::from("/org/bluez/hci0/dev_A4_C1_38_64_7E_DB"));
+    let device = BluetoothDevice::new(bt_session, String::from("/org/bluez/hci0/dev_A4_C1_38_1F_00_3F"));
     // let device = BluetoothDevice::new(bt_session, String::from("/org/bluez/hci0/dev_A4_C1_38_15_03_55"));
 
     if let Err(e) = device.connect(10000) {
