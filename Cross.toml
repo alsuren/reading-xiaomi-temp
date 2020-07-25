@@ -1,0 +1,20 @@
+[target.armv7-unknown-linux-gnueabihf]
+# Based on https://www.collabora.com/news-and-blog/blog/2020/06/23/cross-building-rust-gstreamer-plugins-for-the-raspberry-pi/
+# but with `RUN apt-get install -y libdbus-1-dev:armhf` thrown in to get the dependency we need.
+#
+# `context` and `dockerfile` rely on my patch to `cross` which I will make a PR for soon.
+# Until that is available, you can comment them out and build the image
+# manually, using:
+#
+#    docker build -t my/buster-gst-armv7-unknown-linux-gnueabihf \
+#        ../cross/docker/ \
+#        -f docker/Dockerfile.buster-gst-armv7-unknown-linux-gnueabihf
+#
+# and then specify
+#
+#     image = "my/buster-gst-armv7-unknown-linux-gnueabihf"
+#
+# instead.
+#
+context = "../cross/docker"
+dockerfile = "Dockerfile.buster-gst-armv7-unknown-linux-gnueabihf"
