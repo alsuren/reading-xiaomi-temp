@@ -1,12 +1,14 @@
+FROM alsuren/cross-context:latest as context
+
 FROM debian:buster
 
-COPY common.sh /
+COPY  --from=context common.sh /
 RUN /common.sh
 
-COPY cmake.sh /
+COPY  --from=context cmake.sh /
 RUN /cmake.sh
 
-COPY xargo.sh /
+COPY  --from=context xargo.sh /
 RUN /xargo.sh
 
 RUN apt-get install --assume-yes --no-install-recommends \
