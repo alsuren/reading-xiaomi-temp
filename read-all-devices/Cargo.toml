@@ -10,3 +10,4 @@ blurz = "0.4.0"
 lazy_static = "1.4.0"
 mijia = { path = "../mijia" }
 regex = "1"
+btleplug = "0.5.1"
