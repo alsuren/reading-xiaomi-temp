@@ -1,4 +1,9 @@
 use blurz::{BluetoothDevice, BluetoothEvent, BluetoothSession};
+use btleplug::api::{Central, CentralEvent};
+#[cfg(target_os = "linux")]
+use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
+#[cfg(target_os = "macos")]
+use btleplug::corebluetooth::{adapter::Adapter, manager::Manager};
 use mijia::{
     connect_sensors, decode_value, find_sensors, hashmap_from_file, print_sensors, scan,
     start_notify_sensors, SERVICE_CHARACTERISTIC_PATH,
@@ -10,8 +15,49 @@ mod explore_device;
 
 const SENSOR_NAMES_FILENAME: &str = "sensor_names.conf";
 
+// adapter retrieval works differently depending on your platform right now.
+// API needs to be aligned.
+#[cfg(target_os = "macos")]
+fn get_central(manager: &Manager) -> Adapter {
+    let adapters = manager.adapters().unwrap();
+    adapters.into_iter().nth(0).unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn get_central(manager: &Manager) -> ConnectedAdapter {
+    let adapters = manager.adapters().unwrap();
+    let adapter = adapters.into_iter().nth(0).unwrap();
+    adapter.connect().unwrap()
+}
+
 fn main() {
     let sensor_names = hashmap_from_file(SENSOR_NAMES_FILENAME).unwrap();
+
+    let manager = Manager::new().unwrap();
+    let central = get_central(&manager);
+    let event_receiver = central.event_receiver().unwrap();
+
+    // FIXME: turn the bluetooth adapter on?
+    println!("Scanning");
+    central.start_scan().unwrap();
+
+    println!("waiting");
+    while let Ok(event) = event_receiver.recv() {
+        match event {
+            CentralEvent::DeviceDiscovered(bd_addr) => {
+                println!("DeviceDiscovered: {:?}", bd_addr);
+            }
+            CentralEvent::DeviceConnected(bd_addr) => {
+                println!("DeviceConnected: {:?}", bd_addr);
+            }
+            CentralEvent::DeviceDisconnected(bd_addr) => {
+                println!("DeviceDisconnected: {:?}", bd_addr);
+            }
+            e => {
+                println!("Other event {:?}", e);
+            }
+        }
+    }
     let bt_session = &BluetoothSession::create_session(None).unwrap();
     let device_list = scan(&bt_session).unwrap();
     let sensors = find_sensors(&bt_session, &device_list);
