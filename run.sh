@@ -22,7 +22,7 @@ fi
 
 time rsync target/armv7-unknown-linux-gnueabihf/$PROFILE/read-all-devices $TARGET_SSH:read-all-devices
 # time rsync target/armv7-unknown-linux-gnueabihf/$PROFILE/publish-mqtt $TARGET_SSH:publish-mqtt
-
+ssh $TARGET_SSH sudo setcap 'cap_net_raw,cap_net_admin+eip' ./read-all-devices
 if [ $RUN -eq 1 ]
 then
     ssh $TARGET_SSH ./read-all-devices

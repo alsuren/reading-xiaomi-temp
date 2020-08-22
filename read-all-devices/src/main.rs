@@ -53,6 +53,9 @@ fn main() {
             CentralEvent::DeviceDisconnected(bd_addr) => {
                 println!("DeviceDisconnected: {:?}", bd_addr);
             }
+            CentralEvent::DeviceUpdated(bd_addr) => {
+                println!("DeviceUpdated: {:?}", bd_addr);
+            }
             e => {
                 println!("Other event {:?}", e);
             }
