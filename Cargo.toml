@@ -1,7 +1,5 @@
 [workspace]
 
 members = [
-    "mijia",
-    "publish-mqtt",
     "read-all-devices",
 ]
