@@ -1,8 +1,9 @@
 use anyhow::anyhow;
 use btleplug::api::Peripheral;
-use btleplug::api::{Central, CentralEvent};
+use btleplug::api::{BDAddr, Central, CentralEvent};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
-use std::error::Error;
+use std::str::FromStr;
+use std::{collections::HashSet, error::Error};
 
 fn get_central(manager: &Manager) -> ConnectedAdapter {
     let adapters = manager.adapters().unwrap();
@@ -22,8 +23,9 @@ fn main() {
     central.start_scan().unwrap();
 
     println!("waiting");
+    let mut seen = Default::default();
     while let Ok(event) = event_receiver.recv() {
-        match on_event(&central, event) {
+        match on_event(&central, event, &mut seen) {
             Ok(()) => {}
             Err(err) => {
                 dbg!(err);
@@ -35,6 +37,7 @@ fn main() {
 fn on_event(
     central: &ConnectedAdapter,
     event: CentralEvent,
+    seen: &mut HashSet<BDAddr>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     match event {
         CentralEvent::DeviceDiscovered(bd_addr) => {
@@ -47,11 +50,38 @@ fn on_event(
             println!("DeviceDisconnected: {:?}", bd_addr);
         }
         CentralEvent::DeviceUpdated(bd_addr) => {
-            let props = central
-                .peripheral(bd_addr)
-                .ok_or_else(|| anyhow!("missing peripheral {}", bd_addr))?
-                .properties();
-            println!("DeviceUpdated: {:?}, {:?}", bd_addr, props);
+            if !seen.contains(&bd_addr) {
+                let device = central
+                    .peripheral(bd_addr)
+                    .ok_or_else(|| anyhow!("missing peripheral {}", bd_addr))?;
+                let props = device.properties();
+
+                println!(
+                    "DeviceUpdated: {:?}, {:?}, {:?}",
+                    bd_addr,
+                    device.is_connected(),
+                    props,
+                );
+                device.on_notification(Box::new(move |val| {
+                    println!("on_notification: {:?} {:?}", bd_addr, val)
+                }));
+                seen.insert(bd_addr);
+
+                if props.local_name == Some("LYWSD03MMC".into()) {
+                    dbg!(device.connect()).unwrap_or_default();
+                    dbg!(device.discover_characteristics())
+                        .unwrap_or_default()
+                        .iter()
+                        .find(|c| {
+                            c.uuid
+                                == btleplug::api::UUID::from_str(
+                                    "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6",
+                                )
+                                .unwrap()
+                        })
+                        .map(|c| dbg!(device.subscribe(c)).unwrap_or_default());
+                }
+            }
         }
         e => {
             println!("Other event {:?}", e);
