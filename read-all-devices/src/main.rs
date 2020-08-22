@@ -62,15 +62,16 @@ fn on_event(
                     device.is_connected(),
                     props,
                 );
-                device.on_notification(Box::new(move |val| {
-                    println!("on_notification: {:?} {:?}", bd_addr, val)
-                }));
                 seen.insert(bd_addr);
 
                 if props.local_name == Some("LYWSD03MMC".into()) {
                     dbg!(device.connect()).unwrap_or_default();
-                    dbg!(device.discover_characteristics())
-                        .unwrap_or_default()
+                    device
+                        .discover_characteristics()
+                        .unwrap_or_else(|e| {
+                            dbg!(e);
+                            Default::default()
+                        })
                         .iter()
                         .find(|c| {
                             c.uuid
@@ -80,6 +81,10 @@ fn on_event(
                                 .unwrap()
                         })
                         .map(|c| dbg!(device.subscribe(c)).unwrap_or_default());
+
+                    device.on_notification(Box::new(move |val| {
+                        println!("on_notification: {:?} {:?}", bd_addr, val)
+                    }));
                 }
             }
         }
