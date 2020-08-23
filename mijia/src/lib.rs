@@ -31,7 +31,6 @@ where
     }
 }
 
-// make into singular version
 pub fn print_sensor(device: &impl Peripheral, sensor_names: &HashMap<BDAddr, String>) {
     let mac_address = device.address();
     let name = sensor_names
@@ -48,7 +47,6 @@ pub fn print_sensor(device: &impl Peripheral, sensor_names: &HashMap<BDAddr, Str
     );
 }
 
-// port
 pub fn connect_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
     let bd_addr = peripheral.address();
     peripheral
@@ -57,7 +55,7 @@ pub fn connect_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
         .with_context(|| format!("connecting to {:?}", bd_addr))
 }
 
-// port, but wants on_notification callback?
+// FIXME: probably wants on_notification callback?
 pub fn start_notify_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
     let bd_addr = peripheral.address();
 
@@ -106,7 +104,6 @@ pub fn start_notify_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<(
     Ok(())
 }
 
-// keep
 pub fn decode_value(value: &[u8]) -> Option<(f32, u8, u16, u16)> {
     if value.len() != 5 {
         return None;
@@ -121,7 +118,6 @@ pub fn decode_value(value: &[u8]) -> Option<(f32, u8, u16, u16)> {
     Some((temperature, humidity, battery_voltage, battery_percent))
 }
 
-// keep
 /// Read the given file of key-value pairs into a hashmap.
 /// Returns an empty hashmap if the file doesn't exist, or an error if it is malformed.
 pub fn hashmap_from_file(filename: &str) -> Result<HashMap<BDAddr, String>, anyhow::Error> {
