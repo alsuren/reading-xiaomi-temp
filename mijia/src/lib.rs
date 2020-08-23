@@ -1,25 +1,21 @@
 use anyhow::{bail, Context};
-use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral, UUID};
-use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
+use btleplug::api::{BDAddr, Peripheral};
 use failure::Fail;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::convert::TryInto;
-use std::error::Error;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, ErrorKind};
-use std::{str::FromStr, time::Duration};
+use std::io::{BufRead, BufReader};
 
-const SCAN_DURATION: Duration = Duration::from_millis(5000);
-const CONNECT_TIMEOUT_MS: i32 = 10_000;
+// FIXME: discover devices by whether their service data has this in?
+// currently we are discovering them by name.
+// const MIJIA_SERVICE_DATA_UUID: &str = "0000fe95-0000-1000-8000-00805f9b34fb";
 
-const MIJIA_SERVICE_DATA_UUID: &str = "0000fe95-0000-1000-8000-00805f9b34fb";
-pub const SERVICE_CHARACTERISTIC_PATH: &str = "/service0021/char0035";
-const CONNECTION_INTERVAL_CHARACTERISTIC_PATH: &str = "/service0021/char0045";
 /// 500 in little-endian
 const CONNECTION_INTERVAL_500_MS: [u8; 3] = [0xF4, 0x01, 0x00];
 
 const READINGS_CHARACTERISTIC_ID: &str = "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6";
+const INTERVAL_CHARACTERISTIC_ID: &str = "ebe0ccd8-7a0a-4b0c-8a1a-6ff2997da3a6";
 
 /// Just .compat() from failure::ResultExt
 trait FailureCompat<T> {
@@ -65,26 +61,34 @@ pub fn connect_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
 pub fn start_notify_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
     let bd_addr = peripheral.address();
 
-    peripheral
+    let characteristics = peripheral
         .discover_characteristics()
         .compat()
-        .context("discovering characteristics")?
+        .context("discovering characteristics")?;
+
+    let readings_characteristic = characteristics
         .iter()
         .find(|c| c.uuid == READINGS_CHARACTERISTIC_ID.parse().unwrap())
-        .map(|c| {
-            peripheral
-                .subscribe(c)
-                .compat()
-                .context("subscribing to readings")
-        })
-        .transpose()?;
+        .ok_or(anyhow::anyhow!(
+            "could not find readings characteristic on {:}",
+            bd_addr
+        ))?;
 
-    // FIXME: port this code across:
-    // let connection_interval = BluetoothGATTCharacteristic::new(
-    //     bt_session,
-    //     connected_sensor.get_id() + CONNECTION_INTERVAL_CHARACTERISTIC_PATH,
-    // );
-    // connection_interval.write_value(CONNECTION_INTERVAL_500_MS.to_vec(), None)?;
+    peripheral
+        .subscribe(readings_characteristic)
+        .compat()
+        .context("subscribing to readings")?;
+
+    let interval_characteristic = characteristics
+        .iter()
+        .find(|c| c.uuid == INTERVAL_CHARACTERISTIC_ID.parse().unwrap())
+        .ok_or(anyhow::anyhow!(
+            "could not find interval characteristic on {:}",
+            bd_addr
+        ))?;
+    peripheral
+        .command(interval_characteristic, &CONNECTION_INTERVAL_500_MS)
+        .compat()?;
 
     peripheral.on_notification(Box::new(move |val| {
         // FIXME: replace with user-provided callback
