@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use btleplug::api::Peripheral;
 use btleplug::api::{BDAddr, Central, CentralEvent};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
+use failure::ResultExt;
 use std::str::FromStr;
 use std::{collections::HashSet, error::Error};
 
@@ -65,13 +66,10 @@ fn on_event(
                 seen.insert(bd_addr);
 
                 if props.local_name == Some("LYWSD03MMC".into()) {
-                    dbg!(device.connect()).unwrap_or_default();
+                    dbg!(device.connect()).compat()?;
                     device
                         .discover_characteristics()
-                        .unwrap_or_else(|e| {
-                            dbg!(e);
-                            Default::default()
-                        })
+                        .compat()?
                         .iter()
                         .find(|c| {
                             c.uuid
@@ -80,7 +78,8 @@ fn on_event(
                                 )
                                 .unwrap()
                         })
-                        .map(|c| dbg!(device.subscribe(c)).unwrap_or_default());
+                        .map(|c| device.subscribe(c).compat())
+                        .transpose()?;
 
                     device.on_notification(Box::new(move |val| {
                         println!("on_notification: {:?} {:?}", bd_addr, val)
