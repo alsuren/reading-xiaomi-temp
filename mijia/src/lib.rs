@@ -15,7 +15,7 @@ use std::io::{BufRead, BufReader};
 const CONNECTION_INTERVAL_500_MS: [u8; 3] = [0xF4, 0x01, 0x00];
 
 const READINGS_CHARACTERISTIC_ID: &str = "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6";
-const INTERVAL_CHARACTERISTIC_ID: &str = "ebe0ccd8-7a0a-4b0c-8a1a-6ff2997da3a6";
+const INTERVAL_CHARACTERISTIC_ID: &str = "EB:E0:CC:D8:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6";
 
 /// Just .compat() from failure::ResultExt
 trait FailureCompat<T> {
