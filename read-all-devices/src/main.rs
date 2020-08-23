@@ -1,8 +1,8 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use btleplug::api::Peripheral;
-use btleplug::api::{BDAddr, Central, CentralEvent};
+use btleplug::api::{BDAddr, Central, CentralEvent, UUID};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
-use failure::ResultExt;
+use failure::Fail;
 use std::str::FromStr;
 use std::{collections::HashSet, error::Error};
 
@@ -11,6 +11,8 @@ fn get_central(manager: &Manager) -> ConnectedAdapter {
     let adapter = adapters.into_iter().nth(0).unwrap();
     adapter.connect().unwrap()
 }
+
+const READINGS_ID: &str = "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6";
 
 fn main() {
     // let sensor_names = hashmap_from_file(SENSOR_NAMES_FILENAME).unwrap();
@@ -66,19 +68,22 @@ fn on_event(
                 seen.insert(bd_addr);
 
                 if props.local_name == Some("LYWSD03MMC".into()) {
-                    dbg!(device.connect()).compat()?;
+                    device
+                        .connect()
+                        .map_err(|err| err.compat())
+                        .with_context(|| format!("connecting to {:?}", bd_addr))?;
                     device
                         .discover_characteristics()
-                        .compat()?
+                        .map_err(|err| err.compat())
+                        .context("discovering characteristics")?
                         .iter()
-                        .find(|c| {
-                            c.uuid
-                                == btleplug::api::UUID::from_str(
-                                    "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6",
-                                )
-                                .unwrap()
+                        .find(|c| c.uuid == UUID::from_str(READINGS_ID).unwrap())
+                        .map(|c| {
+                            device
+                                .subscribe(c)
+                                .map_err(|err| err.compat())
+                                .context("subscribing to readings")
                         })
-                        .map(|c| device.subscribe(c).compat())
                         .transpose()?;
 
                     device.on_notification(Box::new(move |val| {
