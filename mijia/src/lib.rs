@@ -92,7 +92,15 @@ pub fn start_notify_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<(
 
     peripheral.on_notification(Box::new(move |val| {
         // FIXME: replace with user-provided callback
-        println!("on_notification: {:?} {:?}", bd_addr, val)
+        match decode_value(&val.value) {
+            Some((temperature, humidity, battery_voltage, battery_percent)) => {
+                println!(
+                    "{} Temperature: {:.2}ºC Humidity: {:?}% Battery: {:?} mV ({:?}%)",
+                    bd_addr, temperature, humidity, battery_voltage, battery_percent
+                );
+            }
+            None => println!("on_notification: {:?} {:?}", bd_addr, val),
+        }
     }));
 
     Ok(())
