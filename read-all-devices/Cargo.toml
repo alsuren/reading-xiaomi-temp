@@ -6,6 +6,8 @@ edition = "2018"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+mijia = { path = "../mijia" }
+
 lazy_static = "1.4.0"
 regex = "1"
 btleplug = "0.5.1"

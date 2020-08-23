@@ -1,8 +1,7 @@
-use anyhow::{anyhow, Context};
-use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral, UUID};
+use anyhow::anyhow;
+use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
-use failure::Fail;
-use std::str::FromStr;
+use mijia::connect_sensor;
 use std::{collections::HashSet, error::Error};
 
 fn get_central(manager: &Manager) -> ConnectedAdapter {
@@ -10,8 +9,6 @@ fn get_central(manager: &Manager) -> ConnectedAdapter {
     let adapter = adapters.into_iter().nth(0).unwrap();
     adapter.connect().unwrap()
 }
-
-const READINGS_ID: &str = "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6";
 
 fn main() {
     // let sensor_names = hashmap_from_file(SENSOR_NAMES_FILENAME).unwrap();
@@ -67,27 +64,8 @@ fn on_event(
                 seen.insert(bd_addr);
 
                 if props.local_name == Some("LYWSD03MMC".into()) {
-                    device
-                        .connect()
-                        .map_err(|err| err.compat())
-                        .with_context(|| format!("connecting to {:?}", bd_addr))?;
-                    device
-                        .discover_characteristics()
-                        .map_err(|err| err.compat())
-                        .context("discovering characteristics")?
-                        .iter()
-                        .find(|c| c.uuid == UUID::from_str(READINGS_ID).unwrap())
-                        .map(|c| {
-                            device
-                                .subscribe(c)
-                                .map_err(|err| err.compat())
-                                .context("subscribing to readings")
-                        })
-                        .transpose()?;
-
-                    device.on_notification(Box::new(move |val| {
-                        println!("on_notification: {:?} {:?}", bd_addr, val)
-                    }));
+                    connect_sensor(&device)?;
+                    mijia::start_notify_sensor(&device)?;
                 }
             }
         }

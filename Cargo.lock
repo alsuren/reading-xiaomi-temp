@@ -760,6 +760,7 @@ dependencies = [
  "btleplug",
  "failure",
  "lazy_static",
+ "mijia",
  "regex",
 ]
 
