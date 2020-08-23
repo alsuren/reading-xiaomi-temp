@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context};
-use btleplug::api::Peripheral;
-use btleplug::api::{BDAddr, Central, CentralEvent, UUID};
+use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral, UUID};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
 use failure::Fail;
 use std::str::FromStr;

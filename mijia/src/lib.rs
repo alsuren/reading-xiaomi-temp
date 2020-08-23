@@ -2,6 +2,9 @@ use blurz::{
     BluetoothAdapter, BluetoothDevice, BluetoothDiscoverySession, BluetoothGATTCharacteristic,
     BluetoothSession,
 };
+
+use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral, UUID};
+use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
 use std::cmp::max;
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -20,6 +23,7 @@ const CONNECTION_INTERVAL_CHARACTERISTIC_PATH: &str = "/service0021/char0045";
 /// 500 in little-endian
 const CONNECTION_INTERVAL_500_MS: [u8; 3] = [0xF4, 0x01, 0x00];
 
+// delete
 pub fn scan(bt_session: &BluetoothSession) -> Result<Vec<String>, Box<dyn Error>> {
     let adapter: BluetoothAdapter = BluetoothAdapter::init(bt_session)?;
     adapter.set_powered(true)?;
@@ -39,6 +43,7 @@ pub fn scan(bt_session: &BluetoothSession) -> Result<Vec<String>, Box<dyn Error>
     Ok(device_list)
 }
 
+// delete
 pub fn find_sensors<'a>(
     bt_session: &'a BluetoothSession,
     device_list: &[String],
@@ -62,6 +67,7 @@ pub fn find_sensors<'a>(
     sensors
 }
 
+// make into singular version
 pub fn print_sensors(sensors: &[BluetoothDevice], sensor_names: &HashMap<String, String>) {
     println!("{} sensors:", sensors.len());
     for device in sensors {
@@ -80,6 +86,7 @@ pub fn print_sensors(sensors: &[BluetoothDevice], sensor_names: &HashMap<String,
     }
 }
 
+// port
 pub fn connect_sensor<'a>(sensor: &BluetoothDevice<'a>) -> bool {
     if let Err(e) = sensor.connect(CONNECT_TIMEOUT_MS) {
         println!("Failed to connect {:?}: {:?}", sensor.get_id(), e);
@@ -90,6 +97,7 @@ pub fn connect_sensor<'a>(sensor: &BluetoothDevice<'a>) -> bool {
     }
 }
 
+// delete
 pub fn connect_sensors<'a>(sensors: &'a [BluetoothDevice<'a>]) -> Vec<BluetoothDevice<'a>> {
     let mut connected_sensors = vec![];
     for device in sensors {
@@ -103,6 +111,7 @@ pub fn connect_sensors<'a>(sensors: &'a [BluetoothDevice<'a>]) -> Vec<BluetoothD
     connected_sensors
 }
 
+// port, but wants on_notification callback?
 pub fn start_notify_sensor<'a>(
     bt_session: &'a BluetoothSession,
     connected_sensor: &BluetoothDevice<'a>,
@@ -120,6 +129,7 @@ pub fn start_notify_sensor<'a>(
     Ok(())
 }
 
+// delete
 pub fn start_notify_sensors<'a>(
     bt_session: &'a BluetoothSession,
     connected_sensors: &'a [BluetoothDevice<'a>],
@@ -131,6 +141,7 @@ pub fn start_notify_sensors<'a>(
     }
 }
 
+// keep
 pub fn decode_value(value: &[u8]) -> Option<(f32, u8, u16, u16)> {
     if value.len() != 5 {
         return None;
@@ -145,6 +156,7 @@ pub fn decode_value(value: &[u8]) -> Option<(f32, u8, u16, u16)> {
     Some((temperature, humidity, battery_voltage, battery_percent))
 }
 
+// keep
 /// Read the given file of key-value pairs into a hashmap.
 /// Returns an empty hashmap if the file doesn't exist, or an error if it is malformed.
 pub fn hashmap_from_file(filename: &str) -> Result<HashMap<String, String>, io::Error> {
