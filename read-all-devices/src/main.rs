@@ -1,89 +1,73 @@
 use anyhow::anyhow;
-use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral};
+use btleplug::api::{BDAddr, Central, CentralEvent};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
-use mijia::connect_sensor;
-use std::{collections::HashSet, error::Error};
+use mijia::{connect_sensor, hashmap_from_file, FailureCompat};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
-fn get_central(manager: &Manager) -> ConnectedAdapter {
-    let adapters = manager.adapters().unwrap();
-    let adapter = adapters.into_iter().nth(0).unwrap();
-    adapter.connect().unwrap()
-}
-
-fn main() {
-    // let sensor_names = hashmap_from_file(SENSOR_NAMES_FILENAME).unwrap();
+fn main() -> anyhow::Result<()> {
+    let sensor_names = hashmap_from_file("sensor_names.conf")?;
 
     let manager = Manager::new().unwrap();
-    let central = get_central(&manager);
+    let adapter = manager.adapters().unwrap().into_iter().nth(0).unwrap();
+    manager.down(&adapter).compat()?;
+    manager.up(&adapter).compat()?;
+    let central = adapter.connect().compat()?;
     let event_receiver = central.event_receiver().unwrap();
 
-    // FIXME: turn the bluetooth adapter on?
     println!("Scanning");
+    central.filter_duplicates(false);
     central.start_scan().unwrap();
 
     println!("waiting");
-    let mut seen = Default::default();
-    while let Ok(event) = event_receiver.recv() {
-        match on_event(&central, &mut seen, event) {
-            Ok(()) => {}
-            Err(err) => {
-                dbg!(err);
+
+    let mut sensors_to_connect = VecDeque::new();
+    loop {
+        let start = Instant::now();
+        let next_timeout = start + Duration::from_secs(5);
+        while let Ok(event) = event_receiver.recv_timeout(Duration::from_secs(5)) {
+            event_to_address(event)
+                .and_then(|bd_addr| sensor_names.get_key_value(&bd_addr))
+                .map(|(bd_addr, name): (&BDAddr, &String)| {
+                    println!("Enqueueing {:?}", name);
+                    sensors_to_connect.push_back(*bd_addr);
+                });
+            if Instant::now() > next_timeout {
+                break;
             }
         }
+        println!("Connecting n of {:?}", sensors_to_connect.len());
+        if let Some(bd_addr) = sensors_to_connect.pop_front() {
+            connect_and_subscribe(&central, bd_addr)
+                .map(|()| {
+                    println!(
+                        "connected to: {:?} {:?}",
+                        bd_addr,
+                        sensor_names.get(&bd_addr)
+                    )
+                })
+                .unwrap_or_else(|e| {
+                    println!("error connecting: {:?}", e);
+                    sensors_to_connect.push_back(bd_addr);
+                })
+        };
     }
 }
 
-fn on_event(
-    central: &ConnectedAdapter,
-    seen: &mut HashSet<BDAddr>,
-    event: CentralEvent,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn event_to_address(event: CentralEvent) -> Option<BDAddr> {
     match event {
-        CentralEvent::DeviceDiscovered(bd_addr) => {
-            println!("DeviceDiscovered: {:?}", bd_addr);
-            handle_bd_addr(central, seen, bd_addr)?;
-        }
-        CentralEvent::DeviceConnected(bd_addr) => {
-            println!("DeviceConnected: {:?}", bd_addr);
-            handle_bd_addr(central, seen, bd_addr)?;
-        }
-        CentralEvent::DeviceDisconnected(bd_addr) => {
-            println!("DeviceDisconnected: {:?}", bd_addr);
-            handle_bd_addr(central, seen, bd_addr)?;
-        }
-        CentralEvent::DeviceUpdated(bd_addr) => {
-            handle_bd_addr(central, seen, bd_addr)?;
-        }
-        e => {
-            println!("Other event {:?}", e);
-        }
+        CentralEvent::DeviceDiscovered(bd_addr) => Some(bd_addr),
+        _ => None,
     }
-    Ok(())
 }
 
-fn handle_bd_addr(
-    central: &ConnectedAdapter,
-    seen: &mut HashSet<BDAddr>,
-    bd_addr: BDAddr,
-) -> anyhow::Result<()> {
-    if !seen.contains(&bd_addr) {
-        let device = central
-            .peripheral(bd_addr)
-            .ok_or_else(|| anyhow!("missing peripheral {}", bd_addr))?;
-        let props = device.properties();
-
-        println!(
-            "new bluetooth address: {:?}, {:?}, {:?}",
-            bd_addr,
-            device.is_connected(),
-            props,
-        );
-        seen.insert(bd_addr);
-
-        if props.local_name == Some("LYWSD03MMC".into()) {
-            connect_sensor(&device)?;
-            mijia::start_notify_sensor(&device)?;
-        }
-    }
+fn connect_and_subscribe(central: &ConnectedAdapter, bd_addr: BDAddr) -> anyhow::Result<()> {
+    let device = central
+        .peripheral(bd_addr)
+        .ok_or_else(|| anyhow!("missing peripheral {}", bd_addr))?;
+    connect_sensor(&device)?;
+    mijia::start_notify_sensor(&device)?;
     Ok(())
 }

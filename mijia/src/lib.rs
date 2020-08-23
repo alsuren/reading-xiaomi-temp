@@ -18,7 +18,7 @@ const READINGS_CHARACTERISTIC_ID: &str = "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99
 const INTERVAL_CHARACTERISTIC_ID: &str = "EB:E0:CC:D8:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6";
 
 /// Just .compat() from failure::ResultExt
-trait FailureCompat<T> {
+pub trait FailureCompat<T> {
     fn compat(self) -> anyhow::Result<T>;
 }
 
