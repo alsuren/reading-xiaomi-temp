@@ -1,18 +1,14 @@
-use blurz::{
-    BluetoothAdapter, BluetoothDevice, BluetoothDiscoverySession, BluetoothGATTCharacteristic,
-    BluetoothSession,
-};
-
+use anyhow::{bail, Context};
 use btleplug::api::{BDAddr, Central, CentralEvent, Peripheral, UUID};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
+use failure::Fail;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::error::Error;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, ErrorKind};
-use std::thread;
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 const SCAN_DURATION: Duration = Duration::from_millis(5000);
 const CONNECT_TIMEOUT_MS: i32 = 10_000;
@@ -23,122 +19,79 @@ const CONNECTION_INTERVAL_CHARACTERISTIC_PATH: &str = "/service0021/char0045";
 /// 500 in little-endian
 const CONNECTION_INTERVAL_500_MS: [u8; 3] = [0xF4, 0x01, 0x00];
 
-// delete
-pub fn scan(bt_session: &BluetoothSession) -> Result<Vec<String>, Box<dyn Error>> {
-    let adapter: BluetoothAdapter = BluetoothAdapter::init(bt_session)?;
-    adapter.set_powered(true)?;
+const READINGS_CHARACTERISTIC_ID: &str = "EB:E0:CC:C1:7A:0A:4B:0C:8A:1A:6F:F2:99:7D:A3:A6";
 
-    let discover_session =
-        BluetoothDiscoverySession::create_session(&bt_session, adapter.get_id())?;
-    discover_session.start_discovery()?;
-    println!("Scanning");
-    // Wait for the adapter to scan for a while.
-    thread::sleep(SCAN_DURATION);
-    let device_list = adapter.get_device_list()?;
-
-    discover_session.stop_discovery()?;
-
-    println!("{:?} devices found", device_list.len());
-
-    Ok(device_list)
+/// Just .compat() from failure::ResultExt
+trait FailureCompat<T> {
+    fn compat(self) -> anyhow::Result<T>;
 }
 
-// delete
-pub fn find_sensors<'a>(
-    bt_session: &'a BluetoothSession,
-    device_list: &[String],
-) -> Vec<BluetoothDevice<'a>> {
-    let mut sensors = vec![];
-    for device_path in device_list {
-        let device = BluetoothDevice::new(bt_session, device_path.to_string());
-        println!(
-            "Device: {:?} Name: {:?}",
-            device_path,
-            device.get_name().ok()
-        );
-        if let Ok(service_data) = device.get_service_data() {
-            println!("Service data: {:?}", service_data);
-            if service_data.contains_key(MIJIA_SERVICE_DATA_UUID) {
-                sensors.push(device);
-            }
-        }
+impl<T, E> FailureCompat<T> for Result<T, E>
+where
+    E: failure::Fail,
+{
+    fn compat(self) -> anyhow::Result<T> {
+        Ok(self.map_err(|err| err.compat())?)
     }
-
-    sensors
 }
 
 // make into singular version
-pub fn print_sensors(sensors: &[BluetoothDevice], sensor_names: &HashMap<String, String>) {
-    println!("{} sensors:", sensors.len());
-    for device in sensors {
-        let mac_address = device.get_address().unwrap();
-        // TODO: Find a less ugly way to do this.
-        let empty = "".to_string();
-        let name = sensor_names.get(&mac_address).unwrap_or(&empty);
-        println!(
-            "{}: {:?}, {} services, {} service data, '{}'",
-            mac_address,
-            device.get_name(),
-            device.get_gatt_services().map_or(0, |s| s.len()),
-            device.get_service_data().map_or(0, |s| s.len()),
-            name
-        );
-    }
+pub fn print_sensor(device: &impl Peripheral, sensor_names: &HashMap<BDAddr, String>) {
+    let mac_address = device.address();
+    let name = sensor_names
+        .get(&mac_address)
+        .map(String::as_ref)
+        .unwrap_or("");
+    let props = device.properties();
+    println!(
+        "{}: {:?}, {} services, '{}'",
+        mac_address,
+        props.local_name.unwrap_or_default(),
+        device.characteristics().len(),
+        name
+    );
 }
 
 // port
-pub fn connect_sensor<'a>(sensor: &BluetoothDevice<'a>) -> bool {
-    if let Err(e) = sensor.connect(CONNECT_TIMEOUT_MS) {
-        println!("Failed to connect {:?}: {:?}", sensor.get_id(), e);
-        false
-    } else {
-        println!("Connected to {:?}", sensor.get_id());
-        true
-    }
-}
-
-// delete
-pub fn connect_sensors<'a>(sensors: &'a [BluetoothDevice<'a>]) -> Vec<BluetoothDevice<'a>> {
-    let mut connected_sensors = vec![];
-    for device in sensors {
-        if connect_sensor(device) {
-            connected_sensors.push(device.clone());
-        }
-    }
-
-    println!("Connected to {} sensors.", connected_sensors.len());
-
-    connected_sensors
+pub fn connect_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
+    let bd_addr = peripheral.address();
+    peripheral
+        .connect()
+        .map_err(|err| err.compat())
+        .with_context(|| format!("connecting to {:?}", bd_addr))
 }
 
 // port, but wants on_notification callback?
-pub fn start_notify_sensor<'a>(
-    bt_session: &'a BluetoothSession,
-    connected_sensor: &BluetoothDevice<'a>,
-) -> Result<(), Box<dyn Error>> {
-    let temp_humidity = BluetoothGATTCharacteristic::new(
-        bt_session,
-        connected_sensor.get_id() + SERVICE_CHARACTERISTIC_PATH,
-    );
-    temp_humidity.start_notify()?;
-    let connection_interval = BluetoothGATTCharacteristic::new(
-        bt_session,
-        connected_sensor.get_id() + CONNECTION_INTERVAL_CHARACTERISTIC_PATH,
-    );
-    connection_interval.write_value(CONNECTION_INTERVAL_500_MS.to_vec(), None)?;
-    Ok(())
-}
+pub fn start_notify_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
+    let bd_addr = peripheral.address();
 
-// delete
-pub fn start_notify_sensors<'a>(
-    bt_session: &'a BluetoothSession,
-    connected_sensors: &'a [BluetoothDevice<'a>],
-) {
-    for device in connected_sensors {
-        if let Err(e) = start_notify_sensor(bt_session, device) {
-            println!("Failed to start notify on {}: {:?}", device.get_id(), e);
-        }
-    }
+    peripheral
+        .discover_characteristics()
+        .compat()
+        .context("discovering characteristics")?
+        .iter()
+        .find(|c| c.uuid == READINGS_CHARACTERISTIC_ID.parse().unwrap())
+        .map(|c| {
+            peripheral
+                .subscribe(c)
+                .compat()
+                .context("subscribing to readings")
+        })
+        .transpose()?;
+
+    // FIXME: port this code across:
+    // let connection_interval = BluetoothGATTCharacteristic::new(
+    //     bt_session,
+    //     connected_sensor.get_id() + CONNECTION_INTERVAL_CHARACTERISTIC_PATH,
+    // );
+    // connection_interval.write_value(CONNECTION_INTERVAL_500_MS.to_vec(), None)?;
+
+    peripheral.on_notification(Box::new(move |val| {
+        // FIXME: replace with user-provided callback
+        println!("on_notification: {:?} {:?}", bd_addr, val)
+    }));
+
+    Ok(())
 }
 
 // keep
@@ -159,19 +112,16 @@ pub fn decode_value(value: &[u8]) -> Option<(f32, u8, u16, u16)> {
 // keep
 /// Read the given file of key-value pairs into a hashmap.
 /// Returns an empty hashmap if the file doesn't exist, or an error if it is malformed.
-pub fn hashmap_from_file(filename: &str) -> Result<HashMap<String, String>, io::Error> {
-    let mut map: HashMap<String, String> = HashMap::new();
+pub fn hashmap_from_file(filename: &str) -> Result<HashMap<BDAddr, String>, anyhow::Error> {
+    let mut map = HashMap::new();
     if let Ok(file) = File::open(filename) {
         for line in BufReader::new(file).lines() {
             let line = line?;
             let parts: Vec<&str> = line.splitn(2, '=').collect();
             if parts.len() != 2 {
-                return Err(io::Error::new(
-                    ErrorKind::Other,
-                    format!("Invalid line '{}'", line),
-                ));
+                bail!("Invalid line '{}'", line);
             }
-            map.insert(parts[0].to_string(), parts[1].to_string());
+            map.insert(parts[0].parse::<BDAddr>().compat()?, parts[1].to_string());
         }
     }
     Ok(map)
