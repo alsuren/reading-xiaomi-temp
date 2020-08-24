@@ -197,6 +197,7 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
 
     homie.ready().await?;
 
+    let mut next_scan_due = Instant::now() + Duration::from_secs(60);
     loop {
         println!(
             "{} sensors connected and {} sensors in queue to connect.",
@@ -292,6 +293,14 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
                     anyhow::bail!("someone closed the channel")
                 }
             }
+        }
+
+        let now = Instant::now();
+        if now > next_scan_due {
+            next_scan_due = now + Duration::from_secs(60);
+
+            central.stop_scan().compat().context("stoping scan")?;
+            central.start_scan().compat().context("restarting scan")?;
         }
     }
 }

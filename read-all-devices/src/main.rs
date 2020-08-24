@@ -43,9 +43,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     let mut sensors_to_connect = VecDeque::new();
+    let mut next_scan_due = Instant::now() + Duration::from_secs(60);
     loop {
-        let start = Instant::now();
-        let next_timeout = start + Duration::from_secs(5);
+        let recv_until = Instant::now() + Duration::from_secs(5);
         while let Ok(event) = event_receiver.recv_timeout(Duration::from_secs(5)) {
             if let CentralEvent::DeviceDiscovered(bd_addr) = event {
                 if let Some(name) = sensor_names.get(&bd_addr).map(String::as_str) {
@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
                     sensors_to_connect.push_back(bd_addr);
                 }
             }
-            if Instant::now() > next_timeout {
+            if Instant::now() > recv_until {
                 break;
             }
         }
@@ -72,5 +72,11 @@ fn main() -> anyhow::Result<()> {
                     sensors_to_connect.push_back(bd_addr);
                 })
         };
+        let now = Instant::now();
+        if now > next_scan_due {
+            next_scan_due = now + Duration::from_secs(60);
+
+            central.start_scan().compat().context("starting scan")?;
+        }
     }
 }
