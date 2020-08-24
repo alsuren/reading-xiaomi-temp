@@ -5,7 +5,10 @@ use std::cmp::max;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::fs::File;
-use std::io::{BufRead, BufReader};
+use std::{
+    fmt::{Display, Formatter},
+    io::{BufRead, BufReader},
+};
 
 // FIXME: discover devices by whether their service data has this in?
 // currently we are discovering them by name.
@@ -56,7 +59,10 @@ pub fn connect_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
 }
 
 // FIXME: probably wants on_notification callback?
-pub fn start_notify_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
+pub fn start_notify_sensor<'a>(
+    peripheral: &impl Peripheral,
+    mut callback: impl FnMut(BDAddr, Readings) + Send + Sync + 'static,
+) -> anyhow::Result<()> {
     let bd_addr = peripheral.address();
 
     let characteristics = peripheral
@@ -91,17 +97,7 @@ pub fn start_notify_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<(
     peripheral.on_notification(Box::new(move |val| {
         // FIXME: replace with user-provided callback
         match decode_value(&val.value) {
-            Some(Readings {
-                temperature,
-                humidity,
-                battery_voltage,
-                battery_percent,
-            }) => {
-                println!(
-                    "{} Temperature: {:.2}ºC Humidity: {:?}% Battery: {:?} mV ({:?}%)",
-                    bd_addr, temperature, humidity, battery_voltage, battery_percent
-                );
-            }
+            Some(readings) => callback(bd_addr, readings),
             None => println!("on_notification: {:?} {:?}", bd_addr, val),
         }
     }));
@@ -118,6 +114,22 @@ pub struct Readings {
     pub battery_voltage: u16,
     /// Inferred from `battery_voltage` with a bit of hand-waving.
     pub battery_percent: u16,
+}
+
+impl Display for Readings {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let Readings {
+            temperature,
+            humidity,
+            battery_voltage,
+            battery_percent,
+        } = self;
+        write!(
+            f,
+            "Temperature: {:.2}ºC Humidity: {:?}% Battery: {:?} mV ({:?}%)",
+            temperature, humidity, battery_voltage, battery_percent
+        )
+    }
 }
 
 pub fn decode_value(value: &[u8]) -> Option<Readings> {

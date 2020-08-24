@@ -1,14 +1,15 @@
 use anyhow::anyhow;
 use btleplug::api::{BDAddr, Central, CentralEvent};
 use btleplug::bluez::{adapter::ConnectedAdapter, manager::Manager};
-use mijia::{connect_sensor, hashmap_from_file, FailureCompat};
+use mijia::{connect_sensor, hashmap_from_file, FailureCompat, Readings};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 fn main() -> anyhow::Result<()> {
-    let sensor_names: HashMap<BDAddr, String> = hashmap_from_file("sensor_names.conf")?;
+    let sensor_names = Arc::new(hashmap_from_file("sensor_names.conf")?);
 
     let manager = Manager::new().unwrap();
     let adapter = manager.adapters().unwrap().into_iter().nth(0).unwrap();
@@ -22,6 +23,20 @@ fn main() -> anyhow::Result<()> {
     central.start_scan().unwrap();
 
     println!("waiting");
+    let print_sensor_readings = {
+        let sensor_names = sensor_names.clone();
+        move |bd_addr, readings| {
+            println!(
+                "{} {} ({:?})",
+                bd_addr,
+                readings,
+                sensor_names
+                    .get(&bd_addr)
+                    .map(String::as_str)
+                    .unwrap_or_default()
+            )
+        }
+    };
 
     let mut sensors_to_connect = VecDeque::new();
     loop {
@@ -44,7 +59,7 @@ fn main() -> anyhow::Result<()> {
                 .get(&bd_addr)
                 .map(String::as_str)
                 .unwrap_or_default();
-            connect_and_subscribe(&central, bd_addr)
+            connect_and_subscribe(&central, bd_addr, print_sensor_readings.clone())
                 .map(|()| {
                     println!("connected to: {:?} {:?}", bd_addr, name);
                 })
@@ -63,11 +78,15 @@ fn event_to_address(event: CentralEvent) -> Option<BDAddr> {
     }
 }
 
-fn connect_and_subscribe(central: &ConnectedAdapter, bd_addr: BDAddr) -> anyhow::Result<()> {
+fn connect_and_subscribe(
+    central: &ConnectedAdapter,
+    bd_addr: BDAddr,
+    callback: impl FnMut(BDAddr, Readings) + Send + Sync + 'static,
+) -> anyhow::Result<()> {
     let device = central
         .peripheral(bd_addr)
         .ok_or_else(|| anyhow!("missing peripheral {}", bd_addr))?;
     connect_sensor(&device)?;
-    mijia::start_notify_sensor(&device)?;
+    mijia::start_notify_sensor(&device, callback)?;
     Ok(())
 }
