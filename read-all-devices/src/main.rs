@@ -18,6 +18,8 @@ fn main() -> anyhow::Result<()> {
         .into_iter()
         .nth(0)
         .ok_or(anyhow!("no adaptors"))?;
+    // power-cycle the adaptor on startup for predictable results, and to prevent
+    // interference from the bluez dbus daemon.
     manager.down(&adapter).compat()?;
     manager.up(&adapter).compat()?;
     let central = adapter.connect().compat()?;

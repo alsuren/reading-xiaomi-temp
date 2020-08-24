@@ -69,6 +69,8 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let local = task::LocalSet::new();
 
+    // FIXME: this no longer needs to be a spawn_local, because the new bluetooth
+    // stack is thread safe.
     let bluetooth_handle = local.spawn_local(async move {
         bluetooth_mainloop(homie).await.unwrap();
     });
@@ -169,8 +171,11 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
         .into_iter()
         .nth(0)
         .ok_or(anyhow!("no adaptors"))?;
+    // power-cycle the adaptor on startup for predictable results, and to prevent
+    // interference from the bluez dbus daemon.
     manager.down(&adapter).compat()?;
     manager.up(&adapter).compat()?;
+
     let central = adapter.connect().compat()?;
     let event_receiver = central.event_receiver().unwrap();
     // FIXME: push this down into the place where it's used.
