@@ -26,5 +26,6 @@ ssh $TARGET_SSH sudo setcap 'cap_net_raw,cap_net_admin+eip' ./read-all-devices-n
 ssh $TARGET_SSH sudo setcap 'cap_net_raw,cap_net_admin+eip' ./publish-mqtt-next
 if [ $RUN -eq 1 ]
 then
+    ssh $TARGET_SSH sudo systemctl stop publish-mqtt.service
     ssh $TARGET_SSH env RUST_BACKTRACE=1 ./publish-mqtt-next
 fi
