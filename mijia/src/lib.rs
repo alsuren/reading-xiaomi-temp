@@ -1,5 +1,8 @@
-use anyhow::{bail, Context};
-use btleplug::api::{BDAddr, Peripheral};
+use anyhow::{anyhow, bail, Context};
+use btleplug::{
+    api::{BDAddr, Central, Peripheral},
+    bluez::adapter::ConnectedAdapter,
+};
 use failure::Fail;
 use std::cmp::max;
 use std::collections::HashMap;
@@ -102,6 +105,19 @@ pub fn start_notify_sensor<'a>(
         }
     }));
 
+    Ok(())
+}
+
+pub fn connect_and_subscribe(
+    central: &ConnectedAdapter,
+    bd_addr: BDAddr,
+    callback: impl FnMut(BDAddr, Readings) + Send + Sync + 'static,
+) -> anyhow::Result<()> {
+    let device = central
+        .peripheral(bd_addr)
+        .ok_or_else(|| anyhow!("missing peripheral {}", bd_addr))?;
+    connect_sensor(&device)?;
+    start_notify_sensor(&device, callback)?;
     Ok(())
 }
 
