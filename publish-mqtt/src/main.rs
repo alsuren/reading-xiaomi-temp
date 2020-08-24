@@ -7,7 +7,7 @@ use rustls::ClientConfig;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::{task, try_join};
 
 mod homie;
@@ -188,7 +188,9 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
 
     loop {
         println!("{} sensors in queue to connect.", sensors_to_connect.len());
-        // Try to connect to a sensor.
+        // Try to connect to a single sensor from the front of the queue.
+        // FIXME: connecting to a sensor is currently a blocking operation with
+        // no timeout.
         if let Some(mac_address) = sensors_to_connect.pop_front() {
             let name = sensor_names
                 .get(&mac_address)
@@ -219,11 +221,26 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
         }
 
         // Process events until there are none available for the timeout.
+        // Should poll for between INCOMING_TIMEOUT_MS and 2*INCOMING_TIMEOUT_MS
+        let recv_until = Instant::now() + Duration::from_millis(INCOMING_TIMEOUT_MS);
         while let Ok(event) =
             event_receiver.recv_timeout(Duration::from_millis(INCOMING_TIMEOUT_MS))
         {
             match event {
-                CentralEvent::DeviceConnected(mac_address) => {
+                CentralEvent::DeviceDiscovered(mac_address) => {
+                    if !sensors_to_connect.contains(&mac_address)
+                        && !sensors_connected.contains(&mac_address)
+                        && sensor_names.contains_key(&mac_address)
+                    {
+                        println!(
+                            "Enqueueing {:?} {:?}",
+                            mac_address,
+                            sensor_names.get(&mac_address).unwrap()
+                        );
+                        sensors_to_connect.push_back(mac_address);
+                    }
+                }
+                CentralEvent::DeviceDisconnected(mac_address) => {
                     if let Some(sensor_index) =
                         sensors_connected.iter().position(|s| s == &mac_address)
                     {
@@ -238,15 +255,16 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
                             mac_address
                         );
                     }
-                    continue;
                 }
                 _ => {
                     log::trace!("{:?}", event);
-                    continue;
                 }
             };
+            if Instant::now() > recv_until {
+                break;
+            };
         }
-        // FIXME: This should go on its own mainloop, and use rx.recv()
+        // FIXME: This should go on its own mainloop, and use rx.recv().
         // For it should be okay, because it's just shovelling messages from
         // one channel to another.
         loop {
