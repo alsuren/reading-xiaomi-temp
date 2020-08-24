@@ -27,6 +27,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("Scanning");
     central.filter_duplicates(false);
+    central.active(true);
     central.start_scan().compat().context("starting scan")?;
 
     let print_sensor_readings = {

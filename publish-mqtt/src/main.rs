@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use btleplug::api::Central;
 use futures::FutureExt;
 use mijia::{connect_and_subscribe, hashmap_from_file, FailureCompat, Readings};
@@ -178,6 +178,12 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
 
     let central = adapter.connect().compat()?;
     let event_receiver = central.event_receiver().unwrap();
+
+    println!("Scanning");
+    central.filter_duplicates(false);
+    central.active(true);
+    central.start_scan().compat().context("starting scan")?;
+
     // FIXME: push this down into the place where it's used.
     let properties = [
         Property::new("temperature", "Temperature", Datatype::Float, Some("ºC")),
@@ -192,7 +198,11 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
     homie.ready().await?;
 
     loop {
-        println!("{} sensors in queue to connect.", sensors_to_connect.len());
+        println!(
+            "{} sensors connected and {} sensors in queue to connect.",
+            sensors_connected.len(),
+            sensors_to_connect.len()
+        );
         // Try to connect to a single sensor from the front of the queue.
         // FIXME: connecting to a sensor is currently a blocking operation with
         // no timeout.
