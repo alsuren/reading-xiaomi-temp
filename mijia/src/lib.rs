@@ -61,7 +61,6 @@ pub fn connect_sensor<'a>(peripheral: &impl Peripheral) -> anyhow::Result<()> {
         .with_context(|| format!("connecting to {:?}", bd_addr))
 }
 
-// FIXME: probably wants on_notification callback?
 pub fn start_notify_sensor<'a>(
     peripheral: &impl Peripheral,
     mut callback: impl FnMut(BDAddr, Readings) + Send + Sync + 'static,

@@ -1,22 +1,21 @@
-use blurz::{
-    BluetoothAdapter, BluetoothDevice, BluetoothDiscoverySession, BluetoothEvent, BluetoothSession,
-};
+use anyhow::anyhow;
+use btleplug::api::Central;
 use futures::FutureExt;
-use mijia::{
-    decode_value, find_sensors, hashmap_from_file, print_sensors, start_notify_sensor,
-    SERVICE_CHARACTERISTIC_PATH,
-};
+use mijia::{connect_and_subscribe, hashmap_from_file, FailureCompat, Readings};
 use rumqttc::MqttOptions;
 use rustls::ClientConfig;
-use std::cmp::min;
 use std::collections::{HashMap, VecDeque};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::{task, time, try_join};
+use tokio::{task, try_join};
 
 mod homie;
 
+use btleplug::{
+    api::{BDAddr, CentralEvent},
+    bluez::{adapter::ConnectedAdapter, manager::Manager},
+};
 use homie::{Datatype, HomieDevice, Node, Property};
 
 const DEFAULT_MQTT_PREFIX: &str = "homie";
@@ -24,30 +23,8 @@ const DEFAULT_DEVICE_ID: &str = "mijia-bridge";
 const DEFAULT_DEVICE_NAME: &str = "Mijia bridge";
 const DEFAULT_HOST: &str = "test.mosquitto.org";
 const DEFAULT_PORT: u16 = 1883;
-const DEFAULT_MAX_CONNECTED_SENSORS: usize = 20;
-const SCAN_DURATION: Duration = Duration::from_secs(15);
-const CONNECT_TIMEOUT_MS: i32 = 4_000;
-const INCOMING_TIMEOUT_MS: u32 = 1_000;
+const INCOMING_TIMEOUT_MS: u64 = 1_000;
 const SENSOR_NAMES_FILENAME: &str = "sensor_names.conf";
-
-async fn scan(bt_session: &BluetoothSession) -> Result<Vec<String>, Box<dyn Error>> {
-    let adapter: BluetoothAdapter = BluetoothAdapter::init(bt_session)?;
-    adapter.set_powered(true)?;
-
-    let discover_session =
-        BluetoothDiscoverySession::create_session(&bt_session, adapter.get_id())?;
-    discover_session.start_discovery()?;
-    println!("Scanning");
-    // Wait for the adapter to scan for a while.
-    time::delay_for(SCAN_DURATION).await;
-    let device_list = adapter.get_device_list()?;
-
-    discover_session.stop_discovery()?;
-
-    println!("{:?} devices found", device_list.len());
-
-    Ok(device_list)
-}
 
 #[tokio::main(core_threads = 2)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -93,7 +70,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let local = task::LocalSet::new();
 
     let bluetooth_handle = local.spawn_local(async move {
-        requests(homie).await.unwrap();
+        bluetooth_mainloop(homie).await.unwrap();
     });
 
     // Poll everything to completion, until the first one bombs out.
@@ -111,28 +88,34 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 }
 
 fn node_id_name_for_sensor(
-    sensor: &BluetoothDevice,
-    sensor_names: &HashMap<String, String>,
-) -> Result<(String, String), Box<dyn Error>> {
-    let mac_address = sensor.get_address()?;
-    let node_id = mac_address.replace(":", "");
+    mac_address: &BDAddr,
+    sensor_names: &HashMap<BDAddr, String>,
+) -> (String, String) {
+    let mac_address_string = mac_address.to_string();
+    let node_id = mac_address_string.replace(":", "");
     let node_name = sensor_names
         .get(&mac_address)
         .cloned()
-        .unwrap_or(mac_address);
-    Ok((node_id, node_name))
+        .unwrap_or(mac_address_string);
+    (node_id, node_name)
 }
 
 async fn connect_start_sensor<'a>(
-    bt_session: &'a BluetoothSession,
+    central: &ConnectedAdapter,
     homie: &mut HomieDevice,
-    sensor_names: &HashMap<String, String>,
+    sensor_names: &HashMap<BDAddr, String>,
     properties: Vec<Property>,
-    sensor: &BluetoothDevice<'a>,
+    sensor: &BDAddr,
+    tx: async_channel::Sender<(BDAddr, Readings)>,
 ) -> Result<(), Box<dyn Error>> {
-    sensor.connect(CONNECT_TIMEOUT_MS)?;
-    start_notify_sensor(bt_session, &sensor)?;
-    let (node_id, node_name) = node_id_name_for_sensor(sensor, sensor_names)?;
+    // FIXME: decide whether I want to pass around &BDAddr or BDAddr everywhere.
+    // BDAddr implements copy, so &BDAddr feels a bit pointless.
+    connect_and_subscribe(central, *sensor, move |mac_address, readings| {
+        tx.try_send((mac_address, readings))
+            .expect("tx should be unbounded");
+    })?;
+
+    let (node_id, node_name) = node_id_name_for_sensor(sensor, sensor_names);
     homie
         .add_node(Node::new(
             node_id,
@@ -144,134 +127,115 @@ async fn connect_start_sensor<'a>(
     Ok(())
 }
 
-async fn requests(mut homie: HomieDevice) -> Result<(), Box<dyn Error>> {
+async fn report_readings(
+    homie: &HomieDevice,
+    sensor_names: &HashMap<BDAddr, String>,
+    mac_address: BDAddr,
+    readings: Readings,
+) -> anyhow::Result<()> {
+    let Readings {
+        temperature,
+        humidity,
+        battery_voltage,
+        battery_percent,
+    } = readings;
+    let (node_id, name) = node_id_name_for_sensor(&mac_address, &sensor_names);
+
+    println!(
+        "{} Temperature: {:.2}ºC Humidity: {:?}% Battery {} mV ({} %) ({})",
+        mac_address, temperature, humidity, battery_voltage, battery_percent, name
+    );
+
+    homie
+        .publish_value(&node_id, "temperature", format!("{:.2}", temperature))
+        .await?;
+    homie.publish_value(&node_id, "humidity", humidity).await?;
+    homie
+        .publish_value(&node_id, "battery", battery_percent)
+        .await?;
+
+    Ok(())
+}
+
+async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
     let sensor_names = hashmap_from_file(SENSOR_NAMES_FILENAME)?;
-    let max_connected_sensors = std::env::var("MAX_CONNECTED_SENSORS")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_MAX_CONNECTED_SENSORS);
 
     homie.start().await?;
 
-    let bt_session = &BluetoothSession::create_session(None)?;
-    let device_list = scan(&bt_session).await?;
-    let sensors = find_sensors(&bt_session, &device_list);
-    print_sensors(&sensors, &sensor_names);
-    let (named_sensors, mut unnamed_sensors): (Vec<_>, Vec<_>) = sensors
+    let manager = Manager::new().unwrap();
+    let adapter = manager
+        .adapters()
+        .compat()?
         .into_iter()
-        .partition(|sensor| sensor_names.contains_key(&sensor.get_address().unwrap()));
-    println!(
-        "{} named sensors, {} unnamed sensors",
-        named_sensors.len(),
-        unnamed_sensors.len()
-    );
-
+        .nth(0)
+        .ok_or(anyhow!("no adaptors"))?;
+    manager.down(&adapter).compat()?;
+    manager.up(&adapter).compat()?;
+    let central = adapter.connect().compat()?;
+    let event_receiver = central.event_receiver().unwrap();
+    // FIXME: push this down into the place where it's used.
     let properties = [
         Property::new("temperature", "Temperature", Datatype::Float, Some("ºC")),
         Property::new("humidity", "Humidity", Datatype::Integer, Some("%")),
         Property::new("battery", "Battery level", Datatype::Integer, Some("%")),
     ];
 
-    let mut sensors_to_connect: VecDeque<_> = named_sensors.into();
-    if sensors_to_connect.len() < max_connected_sensors {
-        let extra_sensor_count = min(
-            max_connected_sensors - sensors_to_connect.len(),
-            unnamed_sensors.len(),
-        );
-        println!(
-            "Adding {} unnamed sensors as max connected is {}",
-            extra_sensor_count, max_connected_sensors
-        );
-        sensors_to_connect.extend(unnamed_sensors.drain(0..extra_sensor_count));
-    }
+    let mut sensors_to_connect: VecDeque<BDAddr> = Default::default();
+    let mut sensors_connected: Vec<BDAddr> = vec![];
+    let (tx, rx) = async_channel::unbounded();
 
     homie.ready().await?;
-
-    let mut sensors_connected: Vec<BluetoothDevice> = vec![];
 
     loop {
         println!("{} sensors in queue to connect.", sensors_to_connect.len());
         // Try to connect to a sensor.
-        if let Some(sensor) = sensors_to_connect.pop_front() {
-            let mac_address = sensor.get_address()?;
-            let name = sensor_names.get(&mac_address).unwrap_or(&mac_address);
+        if let Some(mac_address) = sensors_to_connect.pop_front() {
+            let name = sensor_names
+                .get(&mac_address)
+                .map_or("unnamed", String::as_str);
             println!("Trying to connect to {}", name);
             match connect_start_sensor(
-                bt_session,
+                &central,
                 &mut homie,
                 &sensor_names,
                 properties.to_vec(),
-                &sensor,
+                &mac_address,
+                tx.clone(),
             )
             .await
             {
                 Err(e) => {
-                    println!("Failed to connect to {}: {:?}", name, e);
-                    sensors_to_connect.push_back(sensor);
+                    println!("Failed to connect to {} ({}): {:?}", mac_address, name, e);
+                    sensors_to_connect.push_back(mac_address);
                 }
                 Ok(()) => {
-                    println!("Connected to {} and started notifications", name);
-                    sensors_connected.push(sensor);
+                    println!(
+                        "Connected to {} ({}) and started notifications",
+                        mac_address, name
+                    );
+                    sensors_connected.push(mac_address);
                 }
             }
         }
 
         // Process events until there are none available for the timeout.
-        for event in bt_session
-            .incoming(INCOMING_TIMEOUT_MS)
-            .map(BluetoothEvent::from)
+        while let Ok(event) =
+            event_receiver.recv_timeout(Duration::from_millis(INCOMING_TIMEOUT_MS))
         {
             match event {
-                Some(BluetoothEvent::Value { object_path, value }) => {
-                    // TODO: Make this less hacky.
-                    let device_path = match object_path.strip_suffix(SERVICE_CHARACTERISTIC_PATH) {
-                        Some(path) => path,
-                        None => continue,
-                    };
-                    let device = BluetoothDevice::new(bt_session, device_path.to_string());
-
-                    if let Some((temperature, humidity, battery_voltage, battery_percent)) =
-                        decode_value(&value)
-                    {
-                        let (node_id, name) = node_id_name_for_sensor(&device, &sensor_names)?;
-                        println!(
-                            "{} Temperature: {:.2}ºC Humidity: {:?}% Battery {} mV ({} %) ({})",
-                            device.get_id(),
-                            temperature,
-                            humidity,
-                            battery_voltage,
-                            battery_percent,
-                            name
-                        );
-
-                        homie
-                            .publish_value(&node_id, "temperature", format!("{:.2}", temperature))
-                            .await?;
-                        homie.publish_value(&node_id, "humidity", humidity).await?;
-                        homie
-                            .publish_value(&node_id, "battery", battery_percent)
-                            .await?;
-                    } else {
-                        println!("Invalid value from {}", device.get_id());
-                    }
-                }
-                Some(BluetoothEvent::Connected {
-                    object_path,
-                    connected: false,
-                }) => {
-                    if let Some(sensor_index) = sensors_connected
-                        .iter()
-                        .position(|s| s.get_id() == object_path)
+                CentralEvent::DeviceConnected(mac_address) => {
+                    if let Some(sensor_index) =
+                        sensors_connected.iter().position(|s| s == &mac_address)
                     {
                         let sensor = sensors_connected.remove(sensor_index);
-                        let (node_id, node_name) = node_id_name_for_sensor(&sensor, &sensor_names)?;
+                        let (node_id, node_name) = node_id_name_for_sensor(&sensor, &sensor_names);
                         println!("{} disconnected", node_name);
                         homie.remove_node(&node_id).await?;
                         sensors_to_connect.push_back(sensor);
                     } else {
                         println!(
                             "{} disconnected but wasn't known to be connected.",
-                            object_path
+                            mac_address
                         );
                     }
                     continue;
@@ -281,6 +245,20 @@ async fn requests(mut homie: HomieDevice) -> Result<(), Box<dyn Error>> {
                     continue;
                 }
             };
+        }
+        // FIXME: This should go on its own mainloop, and use rx.recv()
+        // For it should be okay, because it's just shovelling messages from
+        // one channel to another.
+        loop {
+            match rx.try_recv() {
+                Ok((mac_address, readings)) => {
+                    report_readings(&homie, &sensor_names, mac_address, readings).await?;
+                }
+                Err(async_channel::TryRecvError::Empty) => break,
+                Err(async_channel::TryRecvError::Closed) => {
+                    anyhow::bail!("someone closed the channel")
+                }
+            }
         }
     }
 }

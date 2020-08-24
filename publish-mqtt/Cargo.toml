@@ -7,8 +7,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "*"
 async-channel = "1.4.0"
-blurz = "0.4.0"
+btleplug = "0.5.1"
 color-backtrace = "0.4.2"
 futures = "*"
 log = "*"

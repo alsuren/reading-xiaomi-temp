@@ -3,4 +3,5 @@
 members = [
     "read-all-devices",
     "mijia",
+    "publish-mqtt",
 ]
