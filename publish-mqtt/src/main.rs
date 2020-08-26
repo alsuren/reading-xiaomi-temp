@@ -177,7 +177,8 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> anyhow::Result<()> {
     manager.up(&adapter).compat()?;
 
     let central = adapter.connect().compat()?;
-    let event_receiver = central.event_receiver().unwrap();
+    let (sender, event_receiver) = std::sync::mpsc::channel();
+    central.on_event(Box::new(move |event| sender.send(event).unwrap()));
 
     println!("Scanning");
     central.filter_duplicates(false);

@@ -9,6 +9,6 @@ license = "MIT OR Apache-2.0"
 mijia = { path = "../mijia" }
 lazy_static = "1.4.0"
 regex = "1"
-btleplug = "0.5.1"
+btleplug = "0.4.*"
 anyhow = "*"
 failure = "*"

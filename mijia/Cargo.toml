@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 anyhow = "*"
-btleplug = "0.5.1"
+btleplug = "0.4.*"
 regex = "1"
 lazy_static = "1.4.0"
 failure = "*"
