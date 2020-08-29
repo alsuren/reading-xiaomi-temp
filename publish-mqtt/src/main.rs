@@ -194,6 +194,40 @@ impl SensorManager {
             to_connect: VecDeque::new(),
         }
     }
+
+    async fn disconnect_first_matching<F>(
+        &mut self,
+        predicate: F,
+    ) -> Result<Option<&Sensor>, Box<dyn Error>>
+    where
+        F: FnMut(&Sensor) -> bool,
+    {
+        if let Some(sensor_index) = self.connected.iter().position(predicate) {
+            let sensor = self.connected.remove(sensor_index);
+            self.to_connect.push_back(sensor);
+            let sensor_ref = self.to_connect.back().unwrap();
+            self.homie.remove_node(&sensor_ref.node_id()).await?;
+            Ok(Some(sensor_ref))
+        } else {
+            Ok(None)
+        }
+    }
+    /// If a sensor hasn't sent any updates in a while, disconnect it and add it back to the
+    /// connect queue.
+    async fn disconnect_first_stale_sensor(self: &mut SensorManager) -> Result<(), Box<dyn Error>> {
+        let now = Instant::now();
+        if let Some(sensor) = self
+            .disconnect_first_matching(|s| now - s.last_update_timestamp > UPDATE_TIMEOUT)
+            .await?
+        {
+            println!(
+                "No update from {} for {:?}, reconnecting",
+                sensor.name,
+                now - sensor.last_update_timestamp
+            );
+        }
+        Ok(())
+    }
 }
 
 async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>> {
@@ -219,7 +253,7 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>
 
     loop {
         connect_first_sensor_in_queue(&bt_session, &mut sensor_manager).await?;
-        disconnect_first_stale_sensor(&mut sensor_manager).await?;
+        sensor_manager.disconnect_first_stale_sensor().await?;
         service_bluetooth_event_queue(&bt_session, &mut sensor_manager).await?;
     }
 }
@@ -260,29 +294,6 @@ async fn connect_start_sensor<'a>(
 
     homie.add_node(sensor.as_node()).await?;
     sensor.last_update_timestamp = Instant::now();
-    Ok(())
-}
-
-/// If a sensor hasn't sent any updates in a while, disconnect it and add it back to the
-/// connect queue.
-async fn disconnect_first_stale_sensor(
-    sensor_manager: &mut SensorManager,
-) -> Result<(), Box<dyn Error>> {
-    let now = Instant::now();
-    if let Some(sensor_index) = sensor_manager
-        .connected
-        .iter()
-        .position(|s| now - s.last_update_timestamp > UPDATE_TIMEOUT)
-    {
-        let sensor = sensor_manager.connected.remove(sensor_index);
-        println!(
-            "No update from {} for {:?}, reconnecting",
-            sensor.name,
-            now - sensor.last_update_timestamp
-        );
-        sensor_manager.homie.remove_node(&sensor.node_id()).await?;
-        sensor_manager.to_connect.push_back(sensor);
-    }
     Ok(())
 }
 
