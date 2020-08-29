@@ -180,6 +180,20 @@ impl Sensor {
     }
 }
 
+struct SensorManager {
+    connected: Vec<Sensor>,
+    to_connect: VecDeque<Sensor>,
+}
+
+impl SensorManager {
+    fn new() -> Self {
+        SensorManager {
+            connected: Vec::new(),
+            to_connect: VecDeque::new(),
+        }
+    }
+}
+
 async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>> {
     let sensor_names = hashmap_from_file(SENSOR_NAMES_FILENAME)?;
 
@@ -197,52 +211,38 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>
         unnamed_sensors.len()
     );
 
-    let mut sensors_to_connect: VecDeque<_> = named_sensors.into();
+    let mut sensor_manager = SensorManager::new();
+    sensor_manager.to_connect.extend(named_sensors.into_iter());
 
     homie.ready().await?;
 
-    let mut sensors_connected: Vec<Sensor> = vec![];
-
     loop {
-        connect_first_sensor_in_queue(
-            &bt_session,
-            &mut homie,
-            &mut sensors_connected,
-            &mut sensors_to_connect,
-        )
-        .await?;
-
-        disconnect_first_stale_sensor(&mut homie, &mut sensors_connected, &mut sensors_to_connect)
-            .await?;
-
-        service_bluetooth_event_queue(
-            &bt_session,
-            &mut homie,
-            &mut sensors_connected,
-            &mut sensors_to_connect,
-        )
-        .await?;
+        connect_first_sensor_in_queue(&bt_session, &mut homie, &mut sensor_manager).await?;
+        disconnect_first_stale_sensor(&mut homie, &mut sensor_manager).await?;
+        service_bluetooth_event_queue(&bt_session, &mut homie, &mut sensor_manager).await?;
     }
 }
 
 async fn connect_first_sensor_in_queue(
     bt_session: &BluetoothSession,
     homie: &mut HomieDevice,
-    sensors_connected: &mut Vec<Sensor>,
-    sensors_to_connect: &mut VecDeque<Sensor>,
+    sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
-    println!("{} sensors in queue to connect.", sensors_to_connect.len());
+    println!(
+        "{} sensors in queue to connect.",
+        sensor_manager.to_connect.len()
+    );
     // Try to connect to a sensor.
-    if let Some(mut sensor) = sensors_to_connect.pop_front() {
+    if let Some(mut sensor) = sensor_manager.to_connect.pop_front() {
         println!("Trying to connect to {}", sensor.name);
         match connect_start_sensor(bt_session, homie, &mut sensor).await {
             Err(e) => {
                 println!("Failed to connect to {}: {:?}", sensor.name, e);
-                sensors_to_connect.push_back(sensor);
+                sensor_manager.to_connect.push_back(sensor);
             }
             Ok(()) => {
                 println!("Connected to {} and started notifications", sensor.name);
-                sensors_connected.push(sensor);
+                sensor_manager.connected.push(sensor);
             }
         }
     }
@@ -267,22 +267,22 @@ async fn connect_start_sensor<'a>(
 /// connect queue.
 async fn disconnect_first_stale_sensor(
     homie: &mut HomieDevice,
-    sensors_connected: &mut Vec<Sensor>,
-    sensors_to_connect: &mut VecDeque<Sensor>,
+    sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
     let now = Instant::now();
-    if let Some(sensor_index) = sensors_connected
+    if let Some(sensor_index) = sensor_manager
+        .connected
         .iter()
         .position(|s| now - s.last_update_timestamp > UPDATE_TIMEOUT)
     {
-        let sensor = sensors_connected.remove(sensor_index);
+        let sensor = sensor_manager.connected.remove(sensor_index);
         println!(
             "No update from {} for {:?}, reconnecting",
             sensor.name,
             now - sensor.last_update_timestamp
         );
         homie.remove_node(&sensor.node_id()).await?;
-        sensors_to_connect.push_back(sensor);
+        sensor_manager.to_connect.push_back(sensor);
     }
     Ok(())
 }
@@ -290,23 +290,21 @@ async fn disconnect_first_stale_sensor(
 async fn service_bluetooth_event_queue(
     bt_session: &BluetoothSession,
     homie: &mut HomieDevice,
-    sensors_connected: &mut Vec<Sensor>,
-    sensors_to_connect: &mut VecDeque<Sensor>,
+    sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
     // Process events until there are none available for the timeout.
     for event in bt_session
         .incoming(INCOMING_TIMEOUT_MS)
         .filter_map(BluetoothEvent::from)
     {
-        handle_bluetooth_event(homie, sensors_connected, sensors_to_connect, event).await?;
+        handle_bluetooth_event(homie, sensor_manager, event).await?;
     }
     Ok(())
 }
 
 async fn handle_bluetooth_event(
     homie: &mut HomieDevice,
-    sensors_connected: &mut Vec<Sensor>,
-    sensors_to_connect: &mut VecDeque<Sensor>,
+    sensor_manager: &mut SensorManager,
     event: BluetoothEvent,
 ) -> Result<(), Box<dyn Error>> {
     match event {
@@ -316,7 +314,8 @@ async fn handle_bluetooth_event(
                 Some(path) => path,
                 None => return Ok(()),
             };
-            if let Some(sensor) = sensors_connected
+            if let Some(sensor) = sensor_manager
+                .connected
                 .iter_mut()
                 .find(|s| s.device_path == device_path)
             {
@@ -335,14 +334,15 @@ async fn handle_bluetooth_event(
             object_path,
             connected: false,
         } => {
-            if let Some(sensor_index) = sensors_connected
+            if let Some(sensor_index) = sensor_manager
+                .connected
                 .iter()
                 .position(|s| s.device_path == object_path)
             {
-                let sensor = sensors_connected.remove(sensor_index);
+                let sensor = sensor_manager.connected.remove(sensor_index);
                 println!("{} disconnected", sensor.name);
                 homie.remove_node(&sensor.node_id()).await?;
-                sensors_to_connect.push_back(sensor);
+                sensor_manager.to_connect.push_back(sensor);
             } else {
                 println!(
                     "{} disconnected but wasn't known to be connected.",
