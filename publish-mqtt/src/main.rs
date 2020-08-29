@@ -197,6 +197,12 @@ impl SensorManager {
         }
     }
 
+    fn get_by_path(&self, device_path: &str) {
+        self.connected
+            .iter_mut()
+            .find(|s| s.device_path == device_path)
+    }
+
     async fn connect_first_sensor_in_queue(&mut self) -> Result<(), Box<dyn Error>> {
         println!("{} sensors in queue to connect.", self.to_connect.len());
         if let Some(mut sensor) = self.to_connect.pop_front() {
@@ -284,11 +290,7 @@ impl SensorManager {
                     Some(path) => path,
                     None => return Ok(()),
                 };
-                if let Some(sensor) = self
-                    .connected
-                    .iter_mut()
-                    .find(|s| s.device_path == device_path)
-                {
+                if let Some(sensor) = self.get_by_path(device_path) {
                     sensor.last_update_timestamp = Instant::now();
                     if let Some(readings) = decode_value(&value) {
                         sensor.publish_readings(&self.homie, &readings).await?;
