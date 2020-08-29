@@ -181,13 +181,15 @@ impl Sensor {
 }
 
 struct SensorManager {
+    homie: HomieDevice,
     connected: Vec<Sensor>,
     to_connect: VecDeque<Sensor>,
 }
 
 impl SensorManager {
-    fn new() -> Self {
+    fn new(homie: HomieDevice) -> Self {
         SensorManager {
+            homie,
             connected: Vec::new(),
             to_connect: VecDeque::new(),
         }
@@ -211,21 +213,19 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>
         unnamed_sensors.len()
     );
 
-    let mut sensor_manager = SensorManager::new();
+    homie.ready().await?;
+    let mut sensor_manager = SensorManager::new(homie);
     sensor_manager.to_connect.extend(named_sensors.into_iter());
 
-    homie.ready().await?;
-
     loop {
-        connect_first_sensor_in_queue(&bt_session, &mut homie, &mut sensor_manager).await?;
-        disconnect_first_stale_sensor(&mut homie, &mut sensor_manager).await?;
-        service_bluetooth_event_queue(&bt_session, &mut homie, &mut sensor_manager).await?;
+        connect_first_sensor_in_queue(&bt_session, &mut sensor_manager).await?;
+        disconnect_first_stale_sensor(&mut sensor_manager).await?;
+        service_bluetooth_event_queue(&bt_session, &mut sensor_manager).await?;
     }
 }
 
 async fn connect_first_sensor_in_queue(
     bt_session: &BluetoothSession,
-    homie: &mut HomieDevice,
     sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
     println!(
@@ -235,7 +235,7 @@ async fn connect_first_sensor_in_queue(
     // Try to connect to a sensor.
     if let Some(mut sensor) = sensor_manager.to_connect.pop_front() {
         println!("Trying to connect to {}", sensor.name);
-        match connect_start_sensor(bt_session, homie, &mut sensor).await {
+        match connect_start_sensor(bt_session, &mut sensor_manager.homie, &mut sensor).await {
             Err(e) => {
                 println!("Failed to connect to {}: {:?}", sensor.name, e);
                 sensor_manager.to_connect.push_back(sensor);
@@ -266,7 +266,6 @@ async fn connect_start_sensor<'a>(
 /// If a sensor hasn't sent any updates in a while, disconnect it and add it back to the
 /// connect queue.
 async fn disconnect_first_stale_sensor(
-    homie: &mut HomieDevice,
     sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
     let now = Instant::now();
@@ -281,7 +280,7 @@ async fn disconnect_first_stale_sensor(
             sensor.name,
             now - sensor.last_update_timestamp
         );
-        homie.remove_node(&sensor.node_id()).await?;
+        sensor_manager.homie.remove_node(&sensor.node_id()).await?;
         sensor_manager.to_connect.push_back(sensor);
     }
     Ok(())
@@ -289,7 +288,6 @@ async fn disconnect_first_stale_sensor(
 
 async fn service_bluetooth_event_queue(
     bt_session: &BluetoothSession,
-    homie: &mut HomieDevice,
     sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
     // Process events until there are none available for the timeout.
@@ -297,13 +295,12 @@ async fn service_bluetooth_event_queue(
         .incoming(INCOMING_TIMEOUT_MS)
         .filter_map(BluetoothEvent::from)
     {
-        handle_bluetooth_event(homie, sensor_manager, event).await?;
+        handle_bluetooth_event(sensor_manager, event).await?;
     }
     Ok(())
 }
 
 async fn handle_bluetooth_event(
-    homie: &mut HomieDevice,
     sensor_manager: &mut SensorManager,
     event: BluetoothEvent,
 ) -> Result<(), Box<dyn Error>> {
@@ -321,7 +318,9 @@ async fn handle_bluetooth_event(
             {
                 sensor.last_update_timestamp = Instant::now();
                 if let Some(readings) = decode_value(&value) {
-                    sensor.publish_readings(homie, &readings).await?;
+                    sensor
+                        .publish_readings(&sensor_manager.homie, &readings)
+                        .await?;
                 } else {
                     println!("Invalid value from {}", sensor.name);
                 }
@@ -341,7 +340,7 @@ async fn handle_bluetooth_event(
             {
                 let sensor = sensor_manager.connected.remove(sensor_index);
                 println!("{} disconnected", sensor.name);
-                homie.remove_node(&sensor.node_id()).await?;
+                sensor_manager.homie.remove_node(&sensor.node_id()).await?;
                 sensor_manager.to_connect.push_back(sensor);
             } else {
                 println!(
