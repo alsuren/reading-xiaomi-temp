@@ -259,6 +259,77 @@ impl SensorManager {
         }
         Ok(())
     }
+
+    async fn service_bluetooth_event_queue(&mut self) -> Result<(), Box<dyn Error>> {
+        // Process events until there are none available for the timeout.
+        while let Some(event) = self
+            .bt_session
+            .incoming(INCOMING_TIMEOUT_MS)
+            .filter_map(BluetoothEvent::from)
+            .next()
+        {
+            self.handle_bluetooth_event(event).await?;
+        }
+        Ok(())
+    }
+
+    async fn handle_bluetooth_event(
+        &mut self,
+        event: BluetoothEvent,
+    ) -> Result<(), Box<dyn Error>> {
+        match event {
+            BluetoothEvent::Value { object_path, value } => {
+                // TODO: Make this less hacky.
+                let device_path = match object_path.strip_suffix(SERVICE_CHARACTERISTIC_PATH) {
+                    Some(path) => path,
+                    None => return Ok(()),
+                };
+                if let Some(sensor) = self
+                    .connected
+                    .iter_mut()
+                    .find(|s| s.device_path == device_path)
+                {
+                    sensor.last_update_timestamp = Instant::now();
+                    if let Some(readings) = decode_value(&value) {
+                        sensor.publish_readings(&self.homie, &readings).await?;
+                    } else {
+                        println!("Invalid value from {}", sensor.name);
+                    }
+                } else {
+                    // TODO: Still send it, in case it is useful?
+                    println!("Got update from unexpected device {}", device_path);
+                }
+            }
+            BluetoothEvent::Connected {
+                object_path,
+                connected: false,
+            } => {
+                if let Some(sensor) = self
+                    .disconnect_first_matching(|s| s.device_path == object_path)
+                    .await?
+                {
+                    println!("{} disconnected", sensor.name);
+                } else {
+                    println!(
+                        "{} disconnected but wasn't known to be connected.",
+                        object_path
+                    );
+                }
+            }
+            _ => {
+                log::trace!("{:?}", event);
+            }
+        };
+        Ok(())
+    }
+
+    async fn run(&mut self) -> Result<(), Box<dyn Error>> {
+        loop {
+            sensor_manager.connect_first_sensor_in_queue().await?;
+            sensor_manager.disconnect_first_stale_sensor().await?;
+            sensor_manager.service_bluetooth_event_queue().await?;
+        }
+    }
 }
 
 async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>> {
@@ -282,76 +353,5 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>
     let mut sensor_manager = SensorManager::new(homie, bt_session);
     sensor_manager.to_connect.extend(named_sensors.into_iter());
 
-    loop {
-        sensor_manager.connect_first_sensor_in_queue().await?;
-        sensor_manager.disconnect_first_stale_sensor().await?;
-        service_bluetooth_event_queue(&mut sensor_manager).await?;
-    }
-}
-
-async fn service_bluetooth_event_queue(
-    sensor_manager: &mut SensorManager,
-) -> Result<(), Box<dyn Error>> {
-    // Process events until there are none available for the timeout.
-    while let Some(event) = sensor_manager
-        .bt_session
-        .incoming(INCOMING_TIMEOUT_MS)
-        .filter_map(BluetoothEvent::from)
-        .next()
-    {
-        handle_bluetooth_event(sensor_manager, event).await?;
-    }
-    Ok(())
-}
-
-async fn handle_bluetooth_event(
-    sensor_manager: &mut SensorManager,
-    event: BluetoothEvent,
-) -> Result<(), Box<dyn Error>> {
-    match event {
-        BluetoothEvent::Value { object_path, value } => {
-            // TODO: Make this less hacky.
-            let device_path = match object_path.strip_suffix(SERVICE_CHARACTERISTIC_PATH) {
-                Some(path) => path,
-                None => return Ok(()),
-            };
-            if let Some(sensor) = sensor_manager
-                .connected
-                .iter_mut()
-                .find(|s| s.device_path == device_path)
-            {
-                sensor.last_update_timestamp = Instant::now();
-                if let Some(readings) = decode_value(&value) {
-                    sensor
-                        .publish_readings(&sensor_manager.homie, &readings)
-                        .await?;
-                } else {
-                    println!("Invalid value from {}", sensor.name);
-                }
-            } else {
-                // TODO: Still send it, in case it is useful?
-                println!("Got update from unexpected device {}", device_path);
-            }
-        }
-        BluetoothEvent::Connected {
-            object_path,
-            connected: false,
-        } => {
-            if let Some(sensor) = sensor_manager
-                .disconnect_first_matching(|s| s.device_path == object_path)
-                .await?
-            {
-                println!("{} disconnected", sensor.name);
-            } else {
-                println!(
-                    "{} disconnected but wasn't known to be connected.",
-                    object_path
-                );
-            }
-        }
-        _ => {
-            log::trace!("{:?}", event);
-        }
-    };
-    Ok(())
+    sensor_manager.run().await
 }
