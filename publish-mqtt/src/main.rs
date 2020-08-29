@@ -182,14 +182,16 @@ impl Sensor {
 
 struct SensorManager {
     homie: HomieDevice,
+    bt_session: BluetoothSession,
     connected: Vec<Sensor>,
     to_connect: VecDeque<Sensor>,
 }
 
 impl SensorManager {
-    fn new(homie: HomieDevice) -> Self {
+    fn new(homie: HomieDevice, bt_session: BluetoothSession) -> Self {
         SensorManager {
             homie,
+            bt_session,
             connected: Vec::new(),
             to_connect: VecDeque::new(),
         }
@@ -233,7 +235,7 @@ impl SensorManager {
 async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>> {
     let sensor_names = hashmap_from_file(SENSOR_NAMES_FILENAME)?;
 
-    let bt_session = &BluetoothSession::create_session(None)?;
+    let bt_session = BluetoothSession::create_session(None)?;
     let device_list = scan(&bt_session).await?;
     let sensors = find_sensors(&bt_session, &device_list);
     print_sensors(&sensors, &sensor_names);
@@ -248,18 +250,17 @@ async fn bluetooth_mainloop(mut homie: HomieDevice) -> Result<(), Box<dyn Error>
     );
 
     homie.ready().await?;
-    let mut sensor_manager = SensorManager::new(homie);
+    let mut sensor_manager = SensorManager::new(homie, bt_session);
     sensor_manager.to_connect.extend(named_sensors.into_iter());
 
     loop {
-        connect_first_sensor_in_queue(&bt_session, &mut sensor_manager).await?;
+        connect_first_sensor_in_queue(&mut sensor_manager).await?;
         sensor_manager.disconnect_first_stale_sensor().await?;
-        service_bluetooth_event_queue(&bt_session, &mut sensor_manager).await?;
+        service_bluetooth_event_queue(&mut sensor_manager).await?;
     }
 }
 
 async fn connect_first_sensor_in_queue(
-    bt_session: &BluetoothSession,
     sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
     println!(
@@ -269,7 +270,13 @@ async fn connect_first_sensor_in_queue(
     // Try to connect to a sensor.
     if let Some(mut sensor) = sensor_manager.to_connect.pop_front() {
         println!("Trying to connect to {}", sensor.name);
-        match connect_start_sensor(bt_session, &mut sensor_manager.homie, &mut sensor).await {
+        match connect_start_sensor(
+            &sensor_manager.bt_session,
+            &mut sensor_manager.homie,
+            &mut sensor,
+        )
+        .await
+        {
             Err(e) => {
                 println!("Failed to connect to {}: {:?}", sensor.name, e);
                 sensor_manager.to_connect.push_back(sensor);
@@ -298,13 +305,14 @@ async fn connect_start_sensor<'a>(
 }
 
 async fn service_bluetooth_event_queue(
-    bt_session: &BluetoothSession,
     sensor_manager: &mut SensorManager,
 ) -> Result<(), Box<dyn Error>> {
     // Process events until there are none available for the timeout.
-    for event in bt_session
+    while let Some(event) = sensor_manager
+        .bt_session
         .incoming(INCOMING_TIMEOUT_MS)
         .filter_map(BluetoothEvent::from)
+        .next()
     {
         handle_bluetooth_event(sensor_manager, event).await?;
     }
