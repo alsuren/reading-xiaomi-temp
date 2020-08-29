@@ -344,15 +344,11 @@ async fn handle_bluetooth_event(
             object_path,
             connected: false,
         } => {
-            if let Some(sensor_index) = sensor_manager
-                .connected
-                .iter()
-                .position(|s| s.device_path == object_path)
+            if let Some(sensor) = sensor_manager
+                .disconnect_first_matching(|s| s.device_path == object_path)
+                .await?
             {
-                let sensor = sensor_manager.connected.remove(sensor_index);
                 println!("{} disconnected", sensor.name);
-                sensor_manager.homie.remove_node(&sensor.node_id()).await?;
-                sensor_manager.to_connect.push_back(sensor);
             } else {
                 println!(
                     "{} disconnected but wasn't known to be connected.",
