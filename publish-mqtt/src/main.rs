@@ -278,11 +278,19 @@ async fn connect_start_sensor<'a>(
 ) -> Result<(), Box<dyn Error>> {
     let device = sensor.device(bt_session);
     device.connect(CONNECT_TIMEOUT_MS)?;
-    start_notify_sensor(bt_session, &device)?;
-
-    homie.add_node(sensor.as_node()).await?;
-    sensor.last_update_timestamp = Instant::now();
-    Ok(())
+    match start_notify_sensor(bt_session, &device) {
+        Ok(()) => {
+            homie.add_node(sensor.as_node()).await?;
+            sensor.last_update_timestamp = Instant::now();
+            Ok(())
+        }
+        Err(e) => {
+            // If starting notifications failed, disconnect so that we start again from a clean
+            // state next time.
+            device.disconnect()?;
+            Err(e)
+        }
+    }
 }
 
 /// If a sensor hasn't sent any updates in a while, disconnect it and add it back to the
