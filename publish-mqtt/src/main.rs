@@ -87,7 +87,7 @@ async fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
 enum ConnectionStatus {
     /// Not yet attempted to connect. Might already be connected from a previous
     /// run of this program.
@@ -110,7 +110,7 @@ enum ConnectionStatus {
     Connected,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Sensor {
     object_path: String,
     mac_address: String,
@@ -250,15 +250,9 @@ async fn bluetooth_connection_loop(
         }
 
         {
-            let state = &mut *state.lock().await;
-            connect_first_sensor_in_queue(
-                bt_session,
-                &mut state.homie,
-                &mut state.sensors_connected,
-                &mut state.sensors_to_connect,
-            )
-            .await
-            .with_context(|| std::line!().to_string())?;
+            action_next_sensor(state.clone(), bt_session.clone())
+                .await
+                .with_context(|| std::line!().to_string())?;
         }
 
         {
@@ -283,11 +277,12 @@ struct SensorState {
     sensors_connected: Vec<Sensor>,
     homie: HomieDevice,
 }
+
 async fn action_next_sensor(
     state: Arc<Mutex<SensorState>>,
     bt_session: MijiaSession,
 ) -> Result<(), anyhow::Error> {
-    let (idx, status) = match next_actionable_sensor(state).await {
+    let (idx, status) = match next_actionable_sensor(state.clone()).await {
         Some(values) => values,
         None => return Ok(()),
     };
@@ -301,7 +296,7 @@ async fn action_next_sensor(
         | ConnectionStatus::Disconnected
         | ConnectionStatus::MarkedDisconnected
         | ConnectionStatus::WatchdogTimeOut => {
-            // connect_sensor_idx(state, bt_session, idx)
+            connect_sensor_at_idx(state.clone(), bt_session, idx).await?;
             Ok(())
         }
         ConnectionStatus::Connected => {
@@ -310,6 +305,7 @@ async fn action_next_sensor(
         }
     }
 }
+
 async fn next_actionable_sensor(
     state: Arc<Mutex<SensorState>>,
 ) -> Option<(usize, ConnectionStatus)> {
@@ -327,6 +323,22 @@ async fn next_actionable_sensor(
             Some((idx, status))
         }
     }
+}
+
+async fn clone_sensor_at_idx(state: Arc<Mutex<SensorState>>, idx: usize) -> Sensor {
+    state.lock().await.sensors[idx].clone()
+}
+
+async fn update_sensor_at_idx(
+    state: Arc<Mutex<SensorState>>,
+    idx: usize,
+    sensor: Sensor,
+) -> Result<(), anyhow::Error> {
+    let mut state = state.lock().await;
+    // FIXME: find a way to assert that nobody else has modified sensor in the meantime.
+    // Maybe give it version number and increment it whenever it is set?
+    state.sensors[idx] = sensor;
+    Ok(())
 }
 
 async fn check_for_sensors(
@@ -357,33 +369,43 @@ async fn check_for_sensors(
     Ok(())
 }
 
-async fn connect_first_sensor_in_queue(
+async fn connect_sensor_at_idx(
+    state: Arc<Mutex<SensorState>>,
     bt_session: &MijiaSession,
-    homie: &mut HomieDevice,
-    sensors_connected: &mut Vec<Sensor>,
-    sensors_to_connect: &mut VecDeque<Sensor>,
+    idx: usize,
 ) -> Result<(), anyhow::Error> {
-    println!("{} sensors in queue to connect.", sensors_to_connect.len());
-    // Try to connect to a sensor.
-    if let Some(mut sensor) = sensors_to_connect.pop_front() {
-        println!("Trying to connect to {}", sensor.name);
-        match connect_start_sensor(bt_session, homie, &mut sensor).await {
-            Err(e) => {
-                println!("Failed to connect to {}: {:?}", sensor.name, e);
-                sensors_to_connect.push_back(sensor);
-            }
-            Ok(()) => {
-                println!("Connected to {} and started notifications", sensor.name);
-                sensors_connected.push(sensor);
-            }
+    {
+        state.lock().await.sensors[idx].connection_status = ConnectionStatus::Connecting {
+            reserved_until: Instant::now() + Duration::from_secs(5 * 60),
         }
     }
+    // Try to connect to a sensor.
+    let mut sensor = clone_sensor_at_idx(state.clone(), idx).await;
+    println!("Trying to connect to {}", sensor.name);
+    match connect_start_sensor(bt_session, &mut sensor).await {
+        Err(e) => {
+            println!("Failed to connect to {}: {:?}", sensor.name, e);
+        }
+        Ok(()) => {
+            println!("Connected to {} and started notifications", sensor.name);
+            state
+                .lock()
+                .await
+                .homie
+                .add_node(sensor.as_node())
+                .await
+                .with_context(|| std::line!().to_string())?;
+            sensor.connection_status = ConnectionStatus::Connected;
+            sensor.last_update_timestamp = Instant::now();
+        }
+    }
+    update_sensor_at_idx(state, idx, sensor).await?;
+
     Ok(())
 }
 
 async fn connect_start_sensor<'a>(
     bt_session: &MijiaSession,
-    homie: &mut HomieDevice,
     sensor: &mut Sensor,
 ) -> Result<(), anyhow::Error> {
     println!("Connecting from status: {:?}", sensor.connection_status);
@@ -392,15 +414,7 @@ async fn connect_start_sensor<'a>(
         .await
         .with_context(|| std::line!().to_string())?;
     match start_notify_sensor(bt_session, &sensor.object_path).await {
-        Ok(()) => {
-            homie
-                .add_node(sensor.as_node())
-                .await
-                .with_context(|| std::line!().to_string())?;
-            sensor.connection_status = ConnectionStatus::Connected;
-            sensor.last_update_timestamp = Instant::now();
-            Ok(())
-        }
+        Ok(()) => Ok(()),
         Err(e) => {
             // If starting notifications failed a second time, disconnect so
             // that we start again from a clean state next time.
